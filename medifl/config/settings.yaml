@@ -1,0 +1,23 @@
+# MediFL Configuration
+app:
+  name: "MediFL"
+  version: "0.1.0"
+  debug: true
+database:
+  url: "postgresql+asyncpg://medifl:medifl_pass@localhost:5432/medifl_db"
+  pool_size: 10
+redis:
+  url: "redis://localhost:6379/0"
+security:
+  secret_key: "your-super-secret-key-change-in-production"
+  algorithm: "HS256"
+  access_token_expire_minutes: 30
+federated_learning:
+  min_nodes: 2
+  max_rounds: 100
+  default_strategy: "fedavg"
+  dp_enabled: true
+  clip_norm: 1.0
+  noise_multiplier: 0.1
+  target_epsilon: 8.0
+  target_delta: 0.00001
