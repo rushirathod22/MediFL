@@ -184,3 +184,10 @@ MediFL is open-source software licensed under the [Apache License 2.0](LICENSE).
 **© 2026 MediFL Platform**
 
 </div>
+
+<div>
+## Contributors
+
+- Rushikesh Rathod
+- Rohan Bangar
+</div>
