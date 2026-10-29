@@ -340,15 +340,23 @@
             Global Diagnostic Model Performance Convergence
           </div>
 
-          <div class="toolbar-actions">
+          <div class="toolbar-actions" style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
             <div class="strategy-tabs">
-              <button class="tab-btn active" onclick="switchStrategy('fedavg', this)">FedAvg</button>
-              <button class="tab-btn" onclick="switchStrategy('fedprox', this)">FedProx</button>
+              <button class="tab-btn active" id="tab-fedavg" onclick="switchStrategy('fedavg', this)">FedAvg</button>
+              <button class="tab-btn" id="tab-fedprox" onclick="switchStrategy('fedprox', this)">FedProx</button>
             </div>
 
             <button class="btn-action" id="btn-trigger-round" onclick="runFederatedRound()">
               <i class="fa-solid fa-play"></i> Run Next FL Round
             </button>
+
+            <button class="btn-action" style="background: rgba(255,255,255,0.06); border: 1px solid var(--panel-border);" id="btn-reset" onclick="resetFederatedSession()">
+              <i class="fa-solid fa-rotate-left"></i> Reset
+            </button>
+
+            <a class="btn-action" style="background: rgba(16, 185, 129, 0.15); border: 1px solid rgba(16, 185, 129, 0.3); color: var(--emerald); text-decoration: none;" href="/api/v1/export-model" download="medifl_global_model.pth">
+              <i class="fa-solid fa-download"></i> Model (.pth)
+            </a>
           </div>
         </div>
 
@@ -500,21 +508,18 @@
     lossGradient.addColorStop(0, 'rgba(99, 102, 241, 0.3)');
     lossGradient.addColorStop(1, 'rgba(99, 102, 241, 0.0)');
 
-    let currentRound = 5;
+    let currentRound = 0;
     let selectedStrategy = 'FedAvg';
-
-    const rounds = ['Round 1', 'Round 2', 'Round 3', 'Round 4', 'Round 5'];
-    const accData = [65.20, 74.80, 81.00, 85.60, 89.40];
-    const lossData = [0.450, 0.380, 0.320, 0.280, 0.240];
+    let targetEpsilon = 8.0;
 
     const chart = new Chart(ctx, {
       type: 'line',
       data: {
-        labels: rounds,
+        labels: [],
         datasets: [
           {
             label: 'Global Accuracy (%)',
-            data: accData,
+            data: [],
             borderColor: '#10b981',
             borderWidth: 3,
             backgroundColor: accGradient,
@@ -527,7 +532,7 @@
           },
           {
             label: 'Weighted Training Loss',
-            data: lossData,
+            data: [],
             borderColor: '#6366f1',
             borderWidth: 3,
             backgroundColor: lossGradient,
@@ -578,14 +583,15 @@
     });
 
     // --- Audit Log Stream ---
-    function addAuditLog(text, tag = 'info') {
+    function addAuditLog(text, tag = 'info', timestamp = null) {
       const term = document.getElementById('log-terminal');
-      const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+      const time = timestamp || new Date().toLocaleTimeString('en-US', { hour12: false });
       
       let tagClass = 'tag-info';
       if (tag === 'success') tagClass = 'tag-success';
       if (tag === 'dp') tagClass = 'tag-dp';
       if (tag === 'hash') tagClass = 'tag-hash';
+      if (tag === 'warning') tagClass = 'tag-info';
 
       const entry = document.createElement('div');
       entry.className = 'log-line';
@@ -599,43 +605,122 @@
       term.scrollTop = term.scrollHeight;
     }
 
-    // Initialize Default Logs
-    addAuditLog('mTLS 1.3 handshake verified with Hospital A (Mumbai)', 'success');
-    addAuditLog('mTLS 1.3 handshake verified with Hospital B (Pune)', 'success');
-    addAuditLog('mTLS 1.3 handshake verified with Hospital C (Delhi)', 'success');
-    addAuditLog('DP-SGD Noise Injected (ε=2.40, δ=1e-5, max_norm=1.0)', 'dp');
-    addAuditLog('Global Model Hash: 6f3ffbe9ef4c264a89bd4821a09e...', 'hash');
+    // Load Live Status on Start
+    async function loadLiveStatus() {
+      try {
+        const resp = await fetch('/api/v1/status');
+        if (!resp.ok) return;
+        const data = await resp.json();
+        
+        currentRound = data.round;
+        selectedStrategy = data.strategy;
+        targetEpsilon = data.target_epsilon || 8.0;
 
-    // Strategy tab switcher
-    function switchStrategy(strat, btn) {
+        document.getElementById('val-round').innerText = `Round ${data.round} / ${data.max_rounds}`;
+        document.getElementById('val-accuracy').innerText = `${data.accuracy.toFixed(2)}%`;
+        document.getElementById('val-dp').innerText = `ε = ${data.epsilon.toFixed(2)}`;
+        document.getElementById('val-strategy').innerText = data.strategy;
+
+        const pct = Math.min(100, (data.epsilon / targetEpsilon) * 100);
+        document.getElementById('dp-fill').style.width = `${pct}%`;
+
+        // Strategy tab styling
+        if (selectedStrategy.toLowerCase().includes('prox')) {
+          document.getElementById('tab-fedprox').classList.add('active');
+          document.getElementById('tab-fedavg').classList.remove('active');
+        } else {
+          document.getElementById('tab-fedavg').classList.add('active');
+          document.getElementById('tab-fedprox').classList.remove('active');
+        }
+
+        // Render Chart from history
+        if (data.history && data.history.length > 0) {
+          chart.data.labels = data.history.map(h => `Round ${h.round}`);
+          chart.data.datasets[0].data = data.history.map(h => h.accuracy);
+          chart.data.datasets[1].data = data.history.map(h => h.loss);
+          chart.update();
+        }
+
+        // Render initial logs
+        const term = document.getElementById('log-terminal');
+        term.innerHTML = '';
+        if (data.logs && data.logs.length > 0) {
+          data.logs.forEach(l => addAuditLog(l.message, l.tag, l.timestamp));
+        }
+
+      } catch (e) {
+        console.warn('Backend not responding yet:', e);
+      }
+    }
+
+    // Strategy switcher
+    async function switchStrategy(strat, btn) {
       document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
       btn.classList.add('active');
       selectedStrategy = strat === 'fedavg' ? 'FedAvg' : 'FedProx';
       document.getElementById('val-strategy').innerText = selectedStrategy;
+
+      try {
+        await fetch('/api/v1/strategy', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ strategy: strat, mu: 0.01 })
+        });
+      } catch (err) {
+        console.warn('Strategy switch API failed:', err);
+      }
       addAuditLog(`Aggregation Strategy switched to ${selectedStrategy}`, 'info');
     }
 
-    // Trigger FL Round API call & UI animation
+    // Reset session
+    async function resetFederatedSession() {
+      const btn = document.getElementById('btn-reset');
+      btn.disabled = true;
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Resetting...';
+      try {
+        await fetch('/api/v1/reset', { method: 'POST' });
+        await loadLiveStatus();
+        addAuditLog('Federated learning session reset to Round 0 baseline.', 'warning');
+      } catch (err) {
+        console.error('Reset failed:', err);
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="fa-solid fa-rotate-left"></i> Reset';
+      }
+    }
+
+    // Trigger FL Round API call & real PyTorch aggregation
     async function runFederatedRound() {
       const btn = document.getElementById('btn-trigger-round');
       btn.disabled = true;
-      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Aggregating Node Gradients...';
+      btn.innerHTML = '<i class="fa-solid fa-spinner fa-spin"></i> Training & Aggregating...';
 
       addAuditLog(`Initiating Federated Training Round ${currentRound + 1} (${selectedStrategy})...`, 'info');
 
       try {
-        const response = await fetch('/api/v1/trigger-round', { method: 'POST' });
+        const response = await fetch('/api/v1/trigger-round', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            strategy: selectedStrategy.toLowerCase(),
+            epochs: 2,
+            lr: 0.008,
+            mu: 0.01
+          })
+        });
+
+        if (!response.ok) throw new Error('API error: ' + response.statusText);
         const res = await response.json();
 
         currentRound = res.round;
-        
+
         // Update Metrics
-        document.getElementById('val-round').innerText = `Round ${currentRound} / 10`;
+        document.getElementById('val-round').innerText = `Round ${currentRound} / ${res.max_rounds || 10}`;
         document.getElementById('val-accuracy').innerText = `${res.accuracy.toFixed(2)}%`;
         document.getElementById('val-dp').innerText = `ε = ${res.epsilon.toFixed(2)}`;
-        
+
         // Update Progress fill
-        const pct = Math.min(100, (res.epsilon / 8.0) * 100);
+        const pct = Math.min(100, (res.epsilon / (res.target_epsilon || 8.0)) * 100);
         document.getElementById('dp-fill').style.width = `${pct}%`;
 
         // Update Chart
@@ -644,46 +729,20 @@
         chart.data.datasets[1].data.push(res.loss);
         chart.update();
 
-        addAuditLog(`Round ${currentRound} Aggregation Successful! Loss: ${res.loss} | Acc: ${res.accuracy}%`, 'success');
-        addAuditLog(`Privacy Budget updated: ε = ${res.epsilon.toFixed(2)} / 8.0`, 'dp');
+        addAuditLog(`Round ${currentRound} Aggregated (${res.strategy})! Weighted Loss: ${res.loss} | Acc: ${res.accuracy}%`, 'success');
+        addAuditLog(`Privacy Budget updated: ε = ${res.epsilon.toFixed(2)} / ${res.target_epsilon}`, 'dp');
         addAuditLog(`Cryptographic SHA-256 Hash: ${res.hash}`, 'hash');
 
       } catch (err) {
-        // Fallback simulation if backend API is not running standalone
-        currentRound++;
-        const prevAcc = accData[accData.length - 1];
-        const prevLoss = lossData[lossData.length - 1];
-
-        const newAcc = Math.min(97.20, Number((prevAcc + 1.45).toFixed(2)));
-        const newLoss = Math.max(0.11, Number((prevLoss - 0.024).toFixed(3)));
-        const newEps = Math.min(8.0, Number((2.40 + (currentRound - 5) * 0.45).toFixed(2)));
-
-        accData.push(newAcc);
-        lossData.push(newLoss);
-
-        document.getElementById('val-round').innerText = `Round ${currentRound} / 10`;
-        document.getElementById('val-accuracy').innerText = `${newAcc.toFixed(2)}%`;
-        document.getElementById('val-dp').innerText = `ε = ${newEps.toFixed(2)}`;
-        
-        const pct = Math.min(100, (newEps / 8.0) * 100);
-        document.getElementById('dp-fill').style.width = `${pct}%`;
-
-        chart.data.labels.push(`Round ${currentRound}`);
-        chart.data.datasets[0].data.push(newAcc);
-        chart.data.datasets[1].data.push(newLoss);
-        chart.update();
-
-        const pseudoHash = Array.from({length: 32}, () => Math.floor(Math.random()*16).toString(16)).join('');
-        addAuditLog(`Round ${currentRound} Aggregation Complete! Loss: ${newLoss} | Accuracy: ${newAcc}%`, 'success');
-        addAuditLog(`Privacy Budget updated: ε = ${newEps.toFixed(2)} / 8.0`, 'dp');
-        addAuditLog(`SHA-256 Weight Hash: ${pseudoHash}`, 'hash');
-      }
-
-      setTimeout(() => {
+        addAuditLog(`Round Execution Error: ${err.message}`, 'warning');
+      } finally {
         btn.disabled = false;
         btn.innerHTML = '<i class="fa-solid fa-play"></i> Run Next FL Round';
-      }, 1000);
+      }
     }
+
+    // Initialize on window load
+    window.addEventListener('DOMContentLoaded', loadLiveStatus);
   </script>
 </body>
 </html>

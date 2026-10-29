@@ -19,3 +19,6 @@ __pycache__/
 *.log
 *.sqlite3
 scratch/
+.pytest_cache/
+models/checkpoints/*.pth
+
